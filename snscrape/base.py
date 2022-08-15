@@ -28,6 +28,7 @@ class _DeprecatedProperty:
 
 def _json_serialise_datetime(obj):
 	'''A JSON serialiser that converts datetime.datetime and datetime.date objects to ISO-8601 strings.'''
+
 	if isinstance(obj, (datetime.datetime, datetime.date)):
 		return obj.isoformat()
 	raise TypeError(f'Object of type {type(obj)} is not JSON serializable')
@@ -39,11 +40,15 @@ def _json_dataclass_to_dict(obj):
 		out['_type'] = f'{type(obj).__module__}.{type(obj).__name__}'
 		for field in dataclasses.fields(obj):
 			assert field.name != '_type'
+			if field.name.startswith('_'):
+				continue
 			out[field.name] = _json_dataclass_to_dict(getattr(obj, field.name))
 		# Add in (non-deprecated) properties
 		for k in dir(obj):
 			if isinstance(getattr(type(obj), k, None), property):
 				assert k != '_type'
+				if k.startswith('_'):
+					continue
 				out[k] = _json_dataclass_to_dict(getattr(obj, k))
 		return out
 	elif isinstance(obj, (tuple, list)):
@@ -62,6 +67,7 @@ class _JSONDataclass:
 
 	def json(self):
 		'''Convert the object to a JSON string'''
+
 		out = _json_dataclass_to_dict(self)
 		for key, value in list(out.items()): # Modifying the dict below, so make a copy first
 			if isinstance(value, IntWithGranularity):
@@ -75,7 +81,8 @@ class _JSONDataclass:
 class Item(_JSONDataclass):
 	'''An abstract base class for an item returned by the scraper's get_items generator.
 
-	An item can really be anything. The string representation should be useful for the CLI output (e.g. a direct URL for the item).'''
+	An item can really be anything. The string representation should be useful for the CLI output (e.g. a direct URL for the item).
+	'''
 
 	@abc.abstractmethod
 	def __str__(self):
@@ -86,7 +93,8 @@ class Item(_JSONDataclass):
 class Entity(_JSONDataclass):
 	'''An abstract base class for an entity returned by the scraper's entity property.
 
-	An entity is typically the account of a person or organisation. The string representation should be the preferred direct URL to the entity's page on the network.'''
+	An entity is typically the account of a person or organisation. The string representation should be the preferred direct URL to the entity's page on the network.
+	'''
 
 	@abc.abstractmethod
 	def __str__(self):
@@ -96,7 +104,8 @@ class Entity(_JSONDataclass):
 class IntWithGranularity(int):
 	'''A number with an associated granularity
 
-	For example, an IntWithGranularity(42000, 1000) represents a number on the order of 42000 with two significant digits, i.e. something counted with a granularity of 1000.'''
+	For example, an IntWithGranularity(42000, 1000) represents a number on the order of 42000 with two significant digits, i.e. something counted with a granularity of 1000.
+	'''
 
 	def __new__(cls, value, granularity, *args, **kwargs):
 		obj = super().__new__(cls, value, *args, **kwargs)
@@ -130,35 +139,43 @@ class Scraper:
 
 	name = None
 
-	def __init__(self, retries = 3):
+	def __init__(self, *, retries = 3, proxies = None):
 		self._retries = retries
+		self._proxies = proxies
 		self._session = requests.Session()
 
 	@abc.abstractmethod
 	def get_items(self):
 		'''Iterator yielding Items.'''
+
 		pass
 
 	def _get_entity(self):
 		'''Get the entity behind the scraper, if any.
 
-		This is the method implemented by subclasses for doing the actual retrieval/entity object creation. For accessing the scraper's entity, use the entity property.'''
+		This is the method implemented by subclasses for doing the actual retrieval/entity object creation. For accessing the scraper's entity, use the entity property.
+		'''
+
 		return None
 
 	@functools.cached_property
 	def entity(self):
 		return self._get_entity()
 
-	def _request(self, method, url, params = None, data = None, headers = None, timeout = 10, responseOkCallback = None, allowRedirects = True):
+	def _request(self, method, url, params = None, data = None, headers = None, timeout = 10, responseOkCallback = None, allowRedirects = True, proxies = None):
+		proxies = proxies or self._proxies or {}
 		for attempt in range(self._retries + 1):
 			# The request is newly prepared on each retry because of potential cookie updates.
 			req = self._session.prepare_request(requests.Request(method, url, params = params, data = data, headers = headers))
+			environmentSettings = self._session.merge_environment_settings(req.url, proxies, None, None, None)
 			logger.info(f'Retrieving {req.url}')
 			logger.debug(f'... with headers: {headers!r}')
 			if data:
 				logger.debug(f'... with data: {data!r}')
+			if environmentSettings:
+				logger.debug(f'... with environmentSettings: {environmentSettings!r}')
 			try:
-				r = self._session.send(req, allow_redirects = allowRedirects, timeout = timeout)
+				r = self._session.send(req, allow_redirects = allowRedirects, timeout = timeout, **environmentSettings)
 			except requests.exceptions.RequestException as exc:
 				if attempt < self._retries:
 					retrying = ', retrying'
@@ -207,15 +224,15 @@ class Scraper:
 		return self._request('POST', *args, **kwargs)
 
 	@classmethod
-	def setup_parser(cls, subparser):
+	def _cli_setup_parser(cls, subparser):
 		pass
 
 	@classmethod
-	def from_args(cls, args):
-		return cls._construct(args)
+	def _cli_from_args(cls, args):
+		return cls._cli_construct(args)
 
 	@classmethod
-	def _construct(cls, argparseArgs, *args, **kwargs):
+	def _cli_construct(cls, argparseArgs, *args, **kwargs):
 		return cls(*args, **kwargs, retries = argparseArgs.retries)
 
 

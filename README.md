@@ -5,13 +5,12 @@ The following services are currently supported:
 
 * Facebook: user profiles, groups, and communities (aka visitor posts)
 * Instagram: user profiles, hashtags, and locations
+* Mastodon: user profiles and toots (single or thread)
 * Reddit: users, subreddits, and searches (via Pushshift)
 * Telegram: channels
-* Twitter: users, user profiles, hashtags, searches, threads, and list posts
+* Twitter: users, user profiles, hashtags, searches, tweets (single or surrounding thread), list posts, and trends
 * VKontakte: user profiles
 * Weibo (Sina Weibo): user profiles
-
-**Please note that some features listed here may only be available in the current development version of snscrape.**
 
 ## Requirements
 snscrape requires Python 3.8 or higher. The Python package dependencies are installed automatically when you install snscrape.

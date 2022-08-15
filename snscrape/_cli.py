@@ -3,6 +3,7 @@ import collections
 import contextlib
 import dataclasses
 import datetime
+import importlib.metadata
 import inspect
 import logging
 import requests
@@ -68,7 +69,7 @@ def _requests_response_repr(name, response, withHistory = True):
 	if withHistory and response.history:
 		ret.append(f'\n  {name}.history = [')
 		for previousResponse in response.history:
-			ret.append(f'\n    ')
+			ret.append('\n    ')
 			ret.append(_requests_response_repr('_', previousResponse, withHistory = False).replace('\n', '\n    '))
 		ret.append('\n  ]')
 	ret.append(f'\n  {name}.status_code = {response.status_code}')
@@ -82,8 +83,8 @@ def _requests_response_repr(name, response, withHistory = True):
 def _requests_exception_repr(name, exc):
 	ret = []
 	ret.append(f'{name} = {exc!r}')
-	ret.append(f'\n  ' + _repr(f'{name}.request', exc.request).replace('\n', '\n  '))
-	ret.append(f'\n  ' + _repr(f'{name}.response', exc.response).replace('\n', '\n  '))
+	ret.append('\n  ' + _repr(f'{name}.request', exc.request).replace('\n', '\n  '))
+	ret.append('\n  ' + _repr(f'{name}.response', exc.response).replace('\n', '\n  '))
 	return ''.join(ret)
 
 
@@ -132,12 +133,22 @@ def _dump_stack_and_locals(trace, exc = None):
 		fp.write('Stack:\n')
 		for frameRecord in trace:
 			fp.write(f'  File "{frameRecord.filename}", line {frameRecord.lineno}, in {frameRecord.function}\n')
-			for line in frameRecord.code_context:
-				fp.write(f'    {line.strip()}\n')
+			if frameRecord.code_context is not None:
+				for line in frameRecord.code_context:
+					fp.write(f'    {line.strip()}\n')
 		fp.write('\n')
 
-		for frameRecord in trace:
-			module = inspect.getmodule(frameRecord[0])
+		modules = [inspect.getmodule(frameRecord[0]) for frameRecord in trace]
+		for i, (module, frameRecord) in enumerate(zip(modules, trace)):
+			if module is None:
+				# Module-less frame, e.g. dataclass.__init__
+				for j in reversed(range(i)):
+					if modules[j] is not None:
+						break
+				else:
+					# No previous module scope
+					continue
+				module = modules[j]
 			if not module.__name__.startswith('snscrape.') and module.__name__ != 'snscrape':
 				continue
 			locals_ = frameRecord[0].f_locals
@@ -150,7 +161,7 @@ def _dump_stack_and_locals(trace, exc = None):
 				fp.write('\n')
 			fp.write('\n')
 			if 'self' in locals_ and hasattr(locals_['self'], '__dict__'):
-				fp.write(f'Object dict:\n')
+				fp.write('Object dict:\n')
 				fp.write(repr(locals_['self'].__dict__))
 				fp.write('\n\n')
 		name = fp.name
@@ -193,6 +204,29 @@ def parse_format(arg):
 	return out
 
 
+class CitationAction(argparse.Action):
+	def __init__(self, option_strings, dest = argparse.SUPPRESS, *args, default = argparse.SUPPRESS, **kwargs):
+		super().__init__(option_strings, dest, *args, **kwargs)
+
+	def __call__(self, parser, namespace, values, optionString):
+		try:
+			m = importlib.metadata.metadata('snscrape')
+		except importlib.metadata.PackageNotFoundError:
+			print('Error: could not find snscrape installation. --citation does not work without the package being installed.', file = sys.stderr)
+			parser.exit(1)
+		print(f'Author: {m["author"]}')
+		print(f'Title: {m["name"]}: {m["summary"]}')
+		print(f'URL: {m["home-page"]}')
+		print(f'Version: {m["version"]}')
+		print(f'Date: 2018‒{m["version"].split(".", 3)[3][:4]}')
+
+		if '.dev' in m['version']:
+			print()
+			print('WARNING! You are running a development version. The date range may be incorrect. Please adjust the upper end of the range to the year of the commit.')
+
+		parser.exit()
+
+
 def parse_args():
 	import snscrape.base
 	import snscrape.modules
@@ -200,6 +234,7 @@ def parse_args():
 
 	parser = argparse.ArgumentParser(formatter_class = argparse.ArgumentDefaultsHelpFormatter)
 	parser.add_argument('--version', action = 'version', version = f'snscrape {snscrape.version.__version__}')
+	parser.add_argument('--citation', action = CitationAction, nargs = 0, help = 'Display recommended citation information and exit')
 	parser.add_argument('-v', '--verbose', '--verbosity', dest = 'verbosity', action = 'count', default = 0, help = 'Increase output verbosity')
 	parser.add_argument('--dump-locals', dest = 'dumpLocals', action = 'store_true', default = False, help = 'Dump local variables on serious log messages (warnings or higher)')
 	parser.add_argument('--retry', '--retries', dest = 'retries', type = int, default = 3, metavar = 'N',
@@ -221,7 +256,7 @@ def parse_args():
 		classes.extend(cls.__subclasses__())
 	for scraper, cls in sorted(scrapers.items()):
 		subparser = subparsers.add_parser(cls.name, help = '', formatter_class = argparse.ArgumentDefaultsHelpFormatter)
-		cls.setup_parser(subparser)
+		cls._cli_setup_parser(subparser)
 		subparser.set_defaults(cls = cls)
 
 	args = parser.parse_args()
@@ -268,7 +303,7 @@ def main():
 	setup_logging()
 	args = parse_args()
 	configure_logging(args.verbosity, args.dumpLocals)
-	scraper = args.cls.from_args(args)
+	scraper = args.cls._cli_from_args(args)
 
 	i = 0
 	with _dump_locals_on_exception():
